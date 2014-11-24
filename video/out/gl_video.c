@@ -140,6 +140,13 @@ struct fbotex {
     int vp_x, vp_y, vp_w, vp_h; // viewport of fbo / used part of the texture
 };
 
+struct fbosurface {
+    struct fbotex fbotex;
+    int64_t pts;
+};
+
+#define FBOSURFACES_MAX 2
+
 struct gl_video {
     GL *gl;
 
@@ -155,7 +162,7 @@ struct gl_video {
     GLuint vao;
 
     GLuint osd_programs[SUBBITMAP_COUNT];
-    GLuint indirect_program, scale_sep_program, final_program;
+    GLuint indirect_program, scale_sep_program, final_program, inter_program;
 
     struct osd_state *osd_state;
     struct mpgl_osd *osd;
@@ -194,6 +201,8 @@ struct gl_video {
 
     struct fbotex indirect_fbo;         // RGB target
     struct fbotex scale_sep_fbo;        // first pass when doing 2 pass scaling
+    struct fbosurface surfaces[FBOSURFACES_MAX];
+    size_t surface_num;
 
     // state for luma (0) and chroma (1) scalers
     struct scaler scalers[2];
@@ -545,6 +554,32 @@ static void fbotex_uninit(struct gl_video *p, struct fbotex *fbo)
     }
 }
 
+static void fbosurfaces_init(struct gl_video *p, struct fbosurface *surfaces,
+                          int w, int h, GLenum iformat)
+{
+
+    for (int i = 0; i < FBOSURFACES_MAX; i++)
+        if (!surfaces[i].fbotex.fbo)
+            fbotex_init(p, &surfaces[i].fbotex, w, h, iformat);
+}
+
+static void fbosurfaces_uninit(struct gl_video *p, struct fbosurface *surfaces)
+{
+
+    for (int i = 0; i < FBOSURFACES_MAX; i++)
+        if (surfaces[i].fbotex.fbo)
+            fbotex_uninit(p, &surfaces[i].fbotex);
+}
+
+static void fbosurface_bind(struct gl_video *p, GLuint *texs, int i)
+{
+    GL *gl = p->gl;
+    struct fbotex *fbotex = &p->surfaces[p->surface_num].fbotex;
+    gl->ActiveTexture(GL_TEXTURE0 + i);
+    gl->BindTexture(p->gl_target, p->surfaces[p->surface_num].fbotex.texture);
+    texs[i] = fbotex->texture;
+}
+
 static void matrix_ortho2d(float m[3][3], float x0, float x1,
                            float y0, float y1)
 {
@@ -711,6 +746,7 @@ static void update_all_uniforms(struct gl_video *p)
     update_uniforms(p, p->indirect_program);
     update_uniforms(p, p->scale_sep_program);
     update_uniforms(p, p->final_program);
+    update_uniforms(p, p->inter_program);
 }
 
 #define SECTION_HEADER "#!section "
@@ -986,6 +1022,7 @@ static void compile_shaders(struct gl_video *p)
 
     char *header_conv = talloc_strdup(tmp, "");
     char *header_final = talloc_strdup(tmp, "");
+    char *header_inter = talloc_strdup(tmp, "");
     char *header_sep = NULL;
 
     if (p->image_desc.id == IMGFMT_NV12 || p->image_desc.id == IMGFMT_NV21) {
@@ -1034,6 +1071,8 @@ static void compile_shaders(struct gl_video *p)
     } else {
         shader_setup_scaler(&header_final, &p->scalers[0], -1);
     }
+
+    shader_def_opt(&header_inter, "USE_LINEAR_INTERPOLATION", 1);
 
     // We want to do scaling in linear light. Scaling is closely connected to
     // texture sampling due to how the shader is structured (or if GL bilinear
@@ -1092,6 +1131,10 @@ static void compile_shaders(struct gl_video *p)
     p->final_program =
         create_program(p, "final", header_final, vertex_shader, s_video);
 
+    header_inter = t_concat(tmp, header, header_inter);
+    p->inter_program =
+        create_program(p, "inter", header_inter, vertex_shader, s_video);
+
     debug_check_gl(p, "shader compilation");
 
     talloc_free(tmp);
@@ -1112,6 +1155,7 @@ static void delete_shaders(struct gl_video *p)
     delete_program(gl, &p->indirect_program);
     delete_program(gl, &p->scale_sep_program);
     delete_program(gl, &p->final_program);
+    delete_program(gl, &p->inter_program);
 }
 
 static void get_scale_factors(struct gl_video *p, double xy[2])
@@ -1336,6 +1380,8 @@ static void reinit_rendering(struct gl_video *p)
     if (p->indirect_program && !p->indirect_fbo.fbo)
         fbotex_init(p, &p->indirect_fbo, w, h, p->opts.fbo_format);
 
+    fbosurfaces_init(p, p->surfaces, w, h, p->opts.fbo_format);
+
     recreate_osd(p);
 }
 
@@ -1539,6 +1585,7 @@ static void uninit_video(struct gl_video *p)
 
     fbotex_uninit(p, &p->indirect_fbo);
     fbotex_uninit(p, &p->scale_sep_fbo);
+    fbosurfaces_uninit(p, p->surfaces);
 }
 
 static void change_dither_trafo(struct gl_video *p)
@@ -1646,7 +1693,7 @@ static void handle_pass(struct gl_video *p, struct pass *chain,
 }
 
 // (fbo==0 makes BindFramebuffer select the screen backbuffer)
-void gl_video_render_frame(struct gl_video *p, int fbo)
+void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
 {
     GL *gl = p->gl;
     struct video_image *vimg = &p->image;
@@ -1716,7 +1763,60 @@ void gl_video_render_frame(struct gl_video *p, int fbo)
                 | (vimg->image_flipped ? 4 : 0);
     chain.render_stereo = true;
 
-    handle_pass(p, &chain, &screen, p->final_program);
+    if (!t) {
+        handle_pass(p, &chain, &screen, p->final_program);
+    } else {
+        GLuint imgtexsurfaces[4] = {0};
+        double inter_coeff = 0.0;
+        struct fbotex *fbotex = &p->surfaces[p->surface_num].fbotex;
+        handle_pass(p, &chain, fbotex, p->final_program);
+        p->surfaces[p->surface_num].pts = t->pts;
+
+        fbosurface_bind(p, imgtexsurfaces, 0);
+        p->surface_num = (p->surface_num + 1) % FBOSURFACES_MAX;
+
+        // if (!p->surfaces[p->surface_num].fbotex.fbo)
+        //     goto inter_program; // previous frame not initialized
+
+        fbosurface_bind(p, imgtexsurfaces, 1);
+        gl->ActiveTexture(GL_TEXTURE0);
+
+        if (t->pts > t->prev_vsync && t->pts < t->next_vsync) {
+            // this is an inbetween frame, blend with the previous one
+            double N = t->next_vsync - t->prev_vsync;
+            double F = t->pts - t->prev_vsync;
+            inter_coeff = F / N;
+            MP_STATS(p, "inter frame p_vsync: %lld, pts: %lld, n_vsync: %lld, mix: %f\n",
+                   t->prev_vsync, t->pts, t->next_vsync, inter_coeff);
+        } else {
+            MP_STATS(p, "normal frame p_vsync: %lld, pts: %lld, n_vsync: %lld\n",
+                   t->prev_vsync, t->pts, t->next_vsync);
+        }
+
+        // XXX: this chain stuff makes absolutely no sense to me, figure out
+        // why the rects are broken...
+        struct pass chain2 = {
+            .f = {
+                .vp_w = p->image_w,
+                .vp_h = p->image_h,
+                .tex_w = p->texture_w,
+                .tex_h = p->texture_h,
+                .texture = imgtexsurfaces[0],
+            },
+        };
+
+        chain2.use_dst = true;
+        chain2.dst = p->dst_rect;
+        chain2.flags = (1 << 2); // XXX: needs flit for some reason
+
+        gl->UseProgram(p->inter_program);
+        GLint loc = gl->GetUniformLocation(p->inter_program, "inter_coeff");
+        if (loc >= 0) {
+            gl->Uniform1f(loc, inter_coeff);
+        }
+
+        handle_pass(p, &chain2, &screen, p->inter_program);
+    }
 
     gl->UseProgram(0);
 
@@ -2484,7 +2584,7 @@ void gl_video_resize_redraw(struct gl_video *p, int w, int h)
 {
     p->vp_w = w;
     p->vp_h = h;
-    gl_video_render_frame(p, 0);
+    gl_video_render_frame(p, 0, NULL);
 }
 
 void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec)

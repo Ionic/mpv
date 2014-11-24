@@ -165,7 +165,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     mpgl_lock(p->glctx);
 
     gl_video_upload_image(p->renderer, mpi);
-    gl_video_render_frame(p->renderer, 0);
+    gl_video_render_frame(p->renderer, 0, NULL);
 
     // The playloop calls this last before waiting some time until it decides
     // to call flip_page(). Tell OpenGL to start execution of the GPU commands
@@ -190,7 +190,7 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
     mpgl_lock(p->glctx);
 
     if (mpi) gl_video_upload_image(p->renderer, mpi);
-    gl_video_render_frame(p->renderer);
+    gl_video_render_frame(p->renderer, 0, t);
 
     MP_STATS(vo, "prev_vsync: %lld; next_vsync %lld, pts %lld, img %d, "
              "1: %lld 2: %lld\n", t->prev_vsync, t->next_vsync, t->pts, !!mpi,
@@ -391,7 +391,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return true;
     case VOCTRL_REDRAW_FRAME:
         mpgl_lock(p->glctx);
-        gl_video_render_frame(p->renderer, 0);
+        gl_video_render_frame(p->renderer, 0, NULL);
         mpgl_unlock(p->glctx);
         return true;
     case VOCTRL_SET_COMMAND_LINE: {
