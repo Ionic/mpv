@@ -580,6 +580,11 @@ static void fbosurface_bind(struct gl_video *p, GLuint *texs, int i)
     texs[i] = fbotex->texture;
 }
 
+static size_t fbosurface_next(struct gl_video *p)
+{
+    return (p->surface_num + 1) % FBOSURFACES_MAX;
+}
+
 static void matrix_ortho2d(float m[3][3], float x0, float x1,
                            float y0, float y1)
 {
@@ -1768,18 +1773,24 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
     } else {
         GLuint imgtexsurfaces[4] = {0};
         double inter_coeff = 0.0;
-        struct fbotex *fbotex = &p->surfaces[p->surface_num].fbotex;
-        handle_pass(p, &chain, fbotex, p->final_program);
-        p->surfaces[p->surface_num].pts = t->pts;
 
-        fbosurface_bind(p, imgtexsurfaces, 0);
-        p->surface_num = (p->surface_num + 1) % FBOSURFACES_MAX;
-
-        // if (!p->surfaces[p->surface_num].fbotex.fbo)
-        //     goto inter_program; // previous frame not initialized
-
-        fbosurface_bind(p, imgtexsurfaces, 1);
-        gl->ActiveTexture(GL_TEXTURE0);
+        if (p->surfaces[fbosurface_next(p)].pts != t->pts) {
+            MP_STATS(p, "new-pts");
+            struct fbotex *fbotex = &p->surfaces[p->surface_num].fbotex;
+            handle_pass(p, &chain, fbotex, p->final_program);
+            p->surfaces[p->surface_num].pts = t->pts;
+            fbosurface_bind(p, imgtexsurfaces, 0);
+            p->surface_num = fbosurface_next(p);
+            fbosurface_bind(p, imgtexsurfaces, 1);
+            gl->ActiveTexture(GL_TEXTURE0);
+        } else {
+            MP_STATS(p, "old-pts");
+            fbosurface_bind(p, imgtexsurfaces, 0);
+            p->surface_num = fbosurface_next(p);
+            fbosurface_bind(p, imgtexsurfaces, 1);
+            p->surface_num = fbosurface_next(p);
+            gl->ActiveTexture(GL_TEXTURE0);
+        }
 
         if (t->pts > t->prev_vsync && t->pts < t->next_vsync) {
             // this is an inbetween frame, blend with the previous one
@@ -1790,16 +1801,17 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
                    (long long)t->prev_vsync, (long long)t->pts,
                    (long long)t->next_vsync, inter_coeff);
             MP_STATS(p, "frame-mix");
-            // the value is scaled to fit in the graph with the completely
-            // unrelated "phase" value (which is stupid)
-            MP_STATS(p, "value-timed %lld %f mix-value",
-                     (long long)t->pts, inter_coeff * 10000);
         } else {
             MP_DBG(p, "normal frame p_vsync: %lld, pts: %lld, n_vsync: %lld\n",
                    (long long)t->prev_vsync, (long long)t->pts,
                    (long long)t->next_vsync);
             MP_STATS(p, "frame-normal");
         }
+
+        // the value is scaled to fit in the graph with the completely
+        // unrelated "phase" value (which is stupid)
+        MP_STATS(p, "value-timed %lld %f mix-value",
+                 (long long)t->pts, inter_coeff * 10000);
 
         // XXX: this chain stuff makes absolutely no sense to me, figure out
         // why the rects are broken...
