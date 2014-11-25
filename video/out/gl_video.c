@@ -1785,10 +1785,10 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             gl->ActiveTexture(GL_TEXTURE0);
         } else {
             MP_STATS(p, "old-pts");
+            p->surface_num = fbosurface_next(p);
             fbosurface_bind(p, imgtexsurfaces, 0);
             p->surface_num = fbosurface_next(p);
             fbosurface_bind(p, imgtexsurfaces, 1);
-            p->surface_num = fbosurface_next(p);
             gl->ActiveTexture(GL_TEXTURE0);
         }
 
