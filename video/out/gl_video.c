@@ -1796,7 +1796,7 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             // this is an inbetween frame, blend with the previous one
             double N = t->next_vsync - t->prev_vsync;
             double F = t->pts - t->prev_vsync;
-            inter_coeff = F / N;
+            inter_coeff = 1.0 - (F / N);
             MP_DBG(p, "inter frame p_vsync: %lld, pts: %lld, n_vsync: %lld, mix: %f\n",
                    (long long)t->prev_vsync, (long long)t->pts,
                    (long long)t->next_vsync, inter_coeff);
