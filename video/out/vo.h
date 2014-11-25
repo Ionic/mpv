@@ -106,6 +106,8 @@ enum mp_voctrl {
     VOCTRL_GET_RECENT_FLIP_TIME,        // int64_t* (using mp_time_us())
 
     VOCTRL_GET_PREF_DEINT,              // int*
+
+    VOCTRL_GET_VSYNC_TIMED,             // bool*
 };
 
 // VOCTRL_SET_EQUALIZER

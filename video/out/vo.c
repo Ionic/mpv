@@ -701,7 +701,7 @@ static void *vo_thread(void *ptr)
     mpthread_set_name("vo");
 
     int r = vo->driver->preinit(vo) ? -1 : 0;
-    in->vsync_timed = true;
+    vo->driver->control(vo, VOCTRL_GET_VSYNC_TIMED, &in->vsync_timed);
     mp_rendezvous(vo, r); // init barrier
     if (r < 0)
         return NULL;
