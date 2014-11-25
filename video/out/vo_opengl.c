@@ -192,9 +192,11 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
     if (mpi) gl_video_upload_image(p->renderer, mpi);
     gl_video_render_frame(p->renderer, 0, t);
 
-    MP_STATS(vo, "prev_vsync: %lld; next_vsync %lld, pts %lld, img %d, "
-             "1: %lld 2: %lld\n", t->prev_vsync, t->next_vsync, t->pts, !!mpi,
-             t->pts - t->prev_vsync, t->pts - t->next_vsync);
+    MP_DBG(vo, "prev_vsync: %lld; next_vsync %lld, pts %lld, img %d, "
+           "1: %lld 2: %lld\n", (long long)t->prev_vsync,
+           (long long)t->next_vsync, (long long)t->pts, !!mpi,
+           (long long)(t->pts - t->prev_vsync),
+           (long long)(t->pts - t->next_vsync));
 
     // The playloop calls this last before waiting some time until it decides
     // to call flip_page(). Tell OpenGL to start execution of the GPU commands

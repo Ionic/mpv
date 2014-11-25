@@ -1786,11 +1786,19 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             double N = t->next_vsync - t->prev_vsync;
             double F = t->pts - t->prev_vsync;
             inter_coeff = F / N;
-            MP_STATS(p, "inter frame p_vsync: %lld, pts: %lld, n_vsync: %lld, mix: %f\n",
-                   t->prev_vsync, t->pts, t->next_vsync, inter_coeff);
+            MP_DBG(p, "inter frame p_vsync: %lld, pts: %lld, n_vsync: %lld, mix: %f\n",
+                   (long long)t->prev_vsync, (long long)t->pts,
+                   (long long)t->next_vsync, inter_coeff);
+            MP_STATS(p, "frame-mix");
+            // the value is scaled to fit in the graph with the completely
+            // unrelated "phase" value (which is stupid)
+            MP_STATS(p, "value-timed %lld %f mix-value",
+                     (long long)t->pts, inter_coeff * 10000);
         } else {
-            MP_STATS(p, "normal frame p_vsync: %lld, pts: %lld, n_vsync: %lld\n",
-                   t->prev_vsync, t->pts, t->next_vsync);
+            MP_DBG(p, "normal frame p_vsync: %lld, pts: %lld, n_vsync: %lld\n",
+                   (long long)t->prev_vsync, (long long)t->pts,
+                   (long long)t->next_vsync);
+            MP_STATS(p, "frame-normal");
         }
 
         // XXX: this chain stuff makes absolutely no sense to me, figure out
