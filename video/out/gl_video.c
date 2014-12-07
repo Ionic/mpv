@@ -1794,7 +1794,7 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
                 inter_coeff = 1 - prev_pts_component;
                 // if the next pts is very far, just don't show it
                 // inter_coeff = inter_coeff < 0.3 ? 0.0 : inter_coeff;
-                MP_ERR(p, "inter frame ppts: %lld, pts: %lld, "
+                MP_DBG(p, "inter frame ppts: %lld, pts: %lld, "
                        "vsync: %lld, mix: %f\n",
                        (long long)prev_pts, (long long)t->pts,
                        (long long)t->next_vsync, inter_coeff);
