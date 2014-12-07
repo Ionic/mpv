@@ -1772,9 +1772,10 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
         handle_pass(p, &chain, &screen, p->final_program);
     } else {
         GLuint imgtexsurfaces[4] = {0};
-        double inter_coeff = 0.0;
+        double inter_coeff = 1.0;
+        int64_t prev_pts = p->surfaces[fbosurface_next(p)].pts;
 
-        if (p->surfaces[fbosurface_next(p)].pts != t->pts) {
+        if (prev_pts != t->pts) {
             MP_STATS(p, "new-pts");
             struct fbotex *fbotex = &p->surfaces[p->surface_num].fbotex;
             handle_pass(p, &chain, fbotex, p->final_program);
@@ -1783,6 +1784,22 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             p->surface_num = fbosurface_next(p);
             fbosurface_bind(p, imgtexsurfaces, 1);
             gl->ActiveTexture(GL_TEXTURE0);
+            MP_DBG(p, "frame ppts: %lld, pts: %lld, vsync: %lld, DIFF: %lld\n",
+                      (long long)prev_pts, (long long)t->pts,
+                      (long long)t->next_vsync, (long long)t->next_vsync - t->pts);
+            if (prev_pts < t->next_vsync && t->pts > t->next_vsync) {
+                double N = t->next_vsync - prev_pts;
+                double P = t->pts - prev_pts;
+                double prev_pts_component = N / P;
+                inter_coeff = 1 - prev_pts_component;
+                // if the next pts is very far, just don't show it
+                // inter_coeff = inter_coeff < 0.3 ? 0.0 : inter_coeff;
+                MP_ERR(p, "inter frame ppts: %lld, pts: %lld, "
+                       "vsync: %lld, mix: %f\n",
+                       (long long)prev_pts, (long long)t->pts,
+                       (long long)t->next_vsync, inter_coeff);
+                MP_STATS(p, "frame-mix");
+            }
         } else {
             MP_STATS(p, "old-pts");
             p->surface_num = fbosurface_next(p);
@@ -1790,22 +1807,6 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             p->surface_num = fbosurface_next(p);
             fbosurface_bind(p, imgtexsurfaces, 1);
             gl->ActiveTexture(GL_TEXTURE0);
-        }
-
-        if (t->pts > t->prev_vsync && t->pts < t->next_vsync) {
-            // this is an inbetween frame, blend with the previous one
-            double N = t->next_vsync - t->prev_vsync;
-            double F = t->pts - t->prev_vsync;
-            inter_coeff = 1.0 - (F / N);
-            MP_DBG(p, "inter frame p_vsync: %lld, pts: %lld, n_vsync: %lld, mix: %f\n",
-                   (long long)t->prev_vsync, (long long)t->pts,
-                   (long long)t->next_vsync, inter_coeff);
-            MP_STATS(p, "frame-mix");
-        } else {
-            MP_DBG(p, "normal frame p_vsync: %lld, pts: %lld, n_vsync: %lld\n",
-                   (long long)t->prev_vsync, (long long)t->pts,
-                   (long long)t->next_vsync);
-            MP_STATS(p, "frame-normal");
         }
 
         // the value is scaled to fit in the graph with the completely
