@@ -557,15 +557,6 @@ static void fbotex_uninit(struct gl_video *p, struct fbotex *fbo)
     }
 }
 
-static void fbosurfaces_init(struct gl_video *p, struct fbosurface *surfaces,
-                          int w, int h, GLenum iformat)
-{
-
-    for (int i = 0; i < FBOSURFACES_MAX; i++)
-        if (!surfaces[i].fbotex.fbo)
-            fbotex_init(p, &surfaces[i].fbotex, w, h, iformat);
-}
-
 static void fbosurfaces_uninit(struct gl_video *p, struct fbosurface *surfaces)
 {
 
@@ -573,6 +564,16 @@ static void fbosurfaces_uninit(struct gl_video *p, struct fbosurface *surfaces)
         if (surfaces[i].fbotex.fbo)
             fbotex_uninit(p, &surfaces[i].fbotex);
 }
+
+static void fbosurfaces_init(struct gl_video *p, struct fbosurface *surfaces,
+                          int w, int h, GLenum iformat)
+{
+    fbosurfaces_uninit(p, surfaces);
+    for (int i = 0; i < FBOSURFACES_MAX; i++)
+        if (!surfaces[i].fbotex.fbo && w > 0 && h > 0)
+            fbotex_init(p, &surfaces[i].fbotex, w, h, iformat);
+}
+
 
 static void fbosurface_bind(struct gl_video *p, GLuint *texs, int i)
 {
@@ -1388,8 +1389,6 @@ static void reinit_rendering(struct gl_video *p)
     if (p->indirect_program && !p->indirect_fbo.fbo)
         fbotex_init(p, &p->indirect_fbo, w, h, p->opts.fbo_format);
 
-    fbosurfaces_init(p, p->surfaces, w, h, p->opts.fbo_format);
-
     recreate_osd(p);
 }
 
@@ -1623,6 +1622,8 @@ struct pass {
     // If true, render source (f) to dst, instead of the full dest. fbo viewport
     bool use_dst;
     struct mp_rect dst;
+    bool use_src;
+    struct mp_rect src;
     int flags; // for write_quad
     bool render_stereo;
 };
@@ -1653,11 +1654,14 @@ static void handle_pass(struct gl_video *p, struct pass *chain,
         .y1 = chain->f.vp_y + chain->f.vp_h,
     };
 
+    if (chain->use_src)
+        src = chain->src;
+
     struct mp_rect dst = {-1, -1, 1, 1};
     if (chain->use_dst)
         dst = chain->dst;
 
-    MP_TRACE(p, "Pass %d: [%d,%d,%d,%d] -> [%d,%d,%d,%d][%d,%d@%dx%d/%dx%d] (%d)\n",
+    MP_DBG(p, "Pass %d: [%d,%d,%d,%d] -> [%d,%d,%d,%d][%d,%d@%dx%d/%dx%d] (%d)\n",
              chain->num, src.x0, src.y0, src.x1, src.y1,
              dst.x0, dst.y0, dst.x1, dst.y1,
              fbo->vp_x, fbo->vp_y, fbo->vp_w, fbo->vp_h,
@@ -1772,7 +1776,6 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
     chain.render_stereo = true;
 
     if (!t) {
-        handle_pass(p, &chain, &screen, p->final_program);
     } else {
         GLuint imgtexsurfaces[4] = {0};
         double inter_coeff = 0.0;
@@ -1819,21 +1822,14 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
         MP_STATS(p, "value-timed %lld %f mix-value",
                  (long long)t->pts, inter_coeff * 10000);
 
-        // XXX: this chain stuff makes absolutely no sense to me, figure out
-        // why the rects are broken...
-        struct pass chain2 = {
-            .f = {
-                .vp_w = p->image_w,
-                .vp_h = p->image_h,
-                .tex_w = p->texture_w,
-                .tex_h = p->texture_h,
-                .texture = imgtexsurfaces[0],
-            },
-        };
-
-        chain2.use_dst = true;
-        chain2.dst = p->dst_rect;
-        chain2.flags = (1 << 2); // XXX: needs flit for some reason
+        chain.use_dst = true;
+        chain.dst = p->dst_rect;
+        chain.use_src = true;
+        chain.src = p->dst_rect;
+        chain.flags = (1 << 2); // (needs flip, wut)
+        chain.f.texture = imgtexsurfaces[0];
+        chain.f.tex_w = p->surfaces[p->surface_num].fbotex.tex_w;
+        chain.f.tex_h = p->surfaces[p->surface_num].fbotex.tex_h;
 
         gl->UseProgram(p->inter_program);
         GLint loc = gl->GetUniformLocation(p->inter_program, "inter_coeff");
@@ -1841,7 +1837,7 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
             gl->Uniform1f(loc, inter_coeff);
         }
 
-        handle_pass(p, &chain2, &screen, p->inter_program);
+        handle_pass(p, &chain, &screen, p->inter_program);
     }
 
     gl->UseProgram(0);
@@ -1860,9 +1856,10 @@ draw_osd:
 
 static void update_window_sized_objects(struct gl_video *p)
 {
+    int w = p->dst_rect.x1 - p->dst_rect.x0;
+    int h = p->dst_rect.y1 - p->dst_rect.y0;
+
     if (p->scale_sep_program) {
-        int w = p->dst_rect.x1 - p->dst_rect.x0;
-        int h = p->dst_rect.y1 - p->dst_rect.y0;
         if ((p->image_params.rotate % 180) == 90)
             MPSWAP(int, w, h);
         if (h > p->scale_sep_fbo.tex_h) {
@@ -1875,6 +1872,10 @@ static void update_window_sized_objects(struct gl_video *p)
         }
         p->scale_sep_fbo.vp_w = p->image_w;
         p->scale_sep_fbo.vp_h = h;
+    }
+
+    if (p->opts.smoothmotion) {
+        fbosurfaces_init(p, p->surfaces, p->vp_w, p->vp_h, p->opts.fbo_format);
     }
 }
 
