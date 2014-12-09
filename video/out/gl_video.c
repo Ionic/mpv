@@ -1776,6 +1776,7 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
     chain.render_stereo = true;
 
     if (!t) {
+        handle_pass(p, &chain, &screen, p->final_program);
     } else {
         GLuint imgtexsurfaces[4] = {0};
         double inter_coeff = 0.0;
